@@ -4,12 +4,14 @@ import {
   Settings, Search, Bell, Minus, Square, X,
   Play, Plus, Film, Home, Library, Compass, UserCircle, LogOut, TrendingUp, Sparkles, ChevronLeft, RotateCw, Gamepad2, MessageSquare, Mic, Mail
 } from "lucide-react";
-import { useState, useCallback, useEffect } from "react";
+import { Suspense, useState, useCallback, useEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import ValorantHub from "./components/ValorantHub";
 import AnimeHub from "./components/AnimeHub";
 import ShortReelsHub from "./components/ShortReelsHub";
 import DiscordHub from "./components/DiscordHub";
 import DiscordVoiceHub from "./components/DiscordVoiceHub";
+import DiscordVoiceOverlay from "./components/DiscordVoiceOverlay";
 import GmailHub from "./components/GmailHub";
 import ConfirmModal, { ConfirmOptions } from "./components/ConfirmModal";
 
@@ -32,6 +34,24 @@ interface UpdateConfig {
 }
 
 export default function HomePage() {
+  return (
+    <Suspense fallback={null}>
+      <HomePageContent />
+    </Suspense>
+  );
+}
+
+function HomePageContent() {
+  const searchParams = useSearchParams();
+
+  if (searchParams.get("overlay") === "discord-voice") {
+    return <DiscordVoiceOverlay />;
+  }
+
+  return <MainHomePage />;
+}
+
+function MainHomePage() {
   const [activeNav, setActiveNav] = useState("home");
   const [activeTab, setActiveTab] = useState("Thịnh hành");
   const [reloadKey, setReloadKey] = useState(0);

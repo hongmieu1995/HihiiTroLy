@@ -32,6 +32,43 @@ async fn create_pip_window(app: tauri::AppHandle, url: String, width: f64, heigh
     
     Ok(())
 }
+
+#[tauri::command]
+async fn open_discord_voice_overlay(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::{Manager, PhysicalPosition};
+
+    if let Some(window) = app.get_webview_window("discord-voice-overlay") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        "discord-voice-overlay",
+        tauri::WebviewUrl::App("/?overlay=discord-voice".parse().unwrap())
+    )
+    .title("Discord Voice TTS")
+    .inner_size(300.0, 360.0)
+    .min_inner_size(260.0, 280.0)
+    .always_on_top(true)
+    .decorations(false)
+    .resizable(true)
+    .transparent(true)
+    .skip_taskbar(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    if let Some(monitor) = window.current_monitor().map_err(|e| e.to_string())? {
+        let size = monitor.size();
+        let scale = monitor.scale_factor();
+        let x = ((size.width as f64 / scale) - 330.0).max(0.0) as i32;
+        let y = 120;
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+    }
+
+    Ok(())
+}
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
@@ -1486,400 +1523,6 @@ async fn launch_discord() -> Result<(), String> {
     Ok(())
 }
 
-use std::sync::Mutex;
-use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
-
-static DISCORD_RPC_CLIENT: OnceLock<Mutex<Option<DiscordIpcClient>>> = OnceLock::new();
-
-fn get_discord_rpc_client() -> &'static Mutex<Option<DiscordIpcClient>> {
-    DISCORD_RPC_CLIENT.get_or_init(|| Mutex::new(None))
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct DiscordRpcRequest {
-    pub client_id: String,
-    pub app_name: Option<String>,
-    pub details: Option<String>,
-    pub state: Option<String>,
-    pub large_image: Option<String>,
-    pub large_text: Option<String>,
-    pub small_image: Option<String>,
-    pub small_text: Option<String>,
-    pub button_1_label: Option<String>,
-    pub button_1_url: Option<String>,
-    pub button_2_label: Option<String>,
-    pub button_2_url: Option<String>,
-    pub show_timestamp: Option<bool>,
-    pub party_size: Option<i64>,
-    pub party_max: Option<i64>,
-}
-
-#[tauri::command]
-async fn set_discord_rpc(mut req: DiscordRpcRequest) -> Result<(), String> {
-    if !check_discord_running().await {
-        return Err("Discord không chạy. Vui lòng mở Discord trước khi kích hoạt RPC!".into());
-    }
-
-    let mutex = get_discord_rpc_client();
-    let mut client_lock = mutex.lock().map_err(|e| format!("Mutex lock error: {}", e))?;
-
-    // Helper closure to create and connect a new client
-    let connect_new = |client_id: &str| -> Result<DiscordIpcClient, String> {
-        let mut new_client = DiscordIpcClient::new(client_id)
-            .map_err(|e| format!("Không thể khởi tạo Discord RPC Client: {}", e))?;
-        new_client.connect()
-            .map_err(|e| format!("Không thể kết nối đến Discord (hãy chắc chắn rằng Discord đang mở!): {}", e))?;
-        Ok(new_client)
-    };
-
-    // If client ID changed, or client is None, connect a new one
-    let needs_new = match &*client_lock {
-        Some(client) => client.client_id != req.client_id,
-        None => true,
-    };
-
-    if needs_new {
-        if let Some(mut old_client) = client_lock.take() {
-            let _ = old_client.close();
-        }
-        let new_client = connect_new(&req.client_id)?;
-        *client_lock = Some(new_client);
-    }
-
-    let mut act = activity::Activity::new();
-
-    if let Some(ref details) = req.details {
-        if !details.trim().is_empty() {
-            act = act.details(details.as_str());
-        }
-    }
-
-    if let Some(ref state) = req.state {
-        if !state.trim().is_empty() {
-            act = act.state(state.as_str());
-        }
-    }
-
-    let mut assets = activity::Assets::new();
-    let mut has_assets = false;
-    if let Some(ref large_img) = req.large_image {
-        if !large_img.trim().is_empty() {
-            assets = assets.large_image(large_img.as_str());
-            has_assets = true;
-            if let Some(ref large_txt) = req.large_text {
-                if !large_txt.trim().is_empty() {
-                    assets = assets.large_text(large_txt.as_str());
-                }
-            }
-        }
-    }
-    if let Some(ref small_img) = req.small_image {
-        if !small_img.trim().is_empty() {
-            assets = assets.small_image(small_img.as_str());
-            has_assets = true;
-            if let Some(ref small_txt) = req.small_text {
-                if !small_txt.trim().is_empty() {
-                    assets = assets.small_text(small_txt.as_str());
-                }
-            }
-        }
-    }
-    if has_assets {
-        act = act.assets(assets);
-    }
-
-    // Format and rewrite URLs in-place so they own the lifetime of the request parameter
-    if let Some(ref mut url) = req.button_1_url {
-        if !url.trim().is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
-            *url = format!("https://{}", url);
-        }
-    }
-    if let Some(ref mut url) = req.button_2_url {
-        if !url.trim().is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
-            *url = format!("https://{}", url);
-        }
-    }
-
-    let mut buttons = Vec::new();
-    if let (Some(ref b1_label), Some(ref b1_url)) = (&req.button_1_label, &req.button_1_url) {
-        if !b1_label.trim().is_empty() && !b1_url.trim().is_empty() {
-            buttons.push(activity::Button::new(b1_label.as_str(), b1_url.as_str()));
-        }
-    }
-    if let (Some(ref b2_label), Some(ref b2_url)) = (&req.button_2_label, &req.button_2_url) {
-        if !b2_label.trim().is_empty() && !b2_url.trim().is_empty() {
-            buttons.push(activity::Button::new(b2_label.as_str(), b2_url.as_str()));
-        }
-    }
-    if !buttons.is_empty() {
-        act = act.buttons(buttons);
-    }
-
-    if req.show_timestamp.unwrap_or(false) {
-        let start = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        act = act.timestamps(activity::Timestamps::new().start(start));
-    }
-
-    if let (Some(size), Some(max)) = (req.party_size, req.party_max) {
-        if max > 0 {
-            act = act.party(activity::Party::new().id("htss").size([size as i32, max as i32]));
-        }
-    }
-
-    // Try to update activity
-    let mut success = false;
-    let mut err_msg = String::new();
-
-    if let Some(client) = &mut *client_lock {
-        match client.set_activity(act.clone()) {
-            Ok(_) => { success = true; }
-            Err(e) => {
-                err_msg = format!("Lỗi cập nhật RPC lần đầu: {}", e);
-                // Discard broken client
-                let _ = client.close();
-            }
-        }
-    }
-
-    // If failed (broken pipe/closed connection), recreate client and try once more!
-    if !success {
-        *client_lock = None;
-        let mut new_client = connect_new(&req.client_id)?;
-        new_client.set_activity(act)
-            .map_err(|e| format!("Không thể cập nhật trạng thái Discord RPC sau khi kết nối lại: {}. (Lỗi ban đầu: {})", e, err_msg))?;
-        *client_lock = Some(new_client);
-    }
-
-    Ok(())
-}
-
-#[tauri::command]
-async fn clear_discord_rpc() -> Result<(), String> {
-    let mutex = get_discord_rpc_client();
-    let mut client_lock = mutex.lock().map_err(|e| format!("Mutex lock error: {}", e))?;
-    if let Some(mut client) = client_lock.take() {
-        let _ = client.clear_activity();
-        let _ = client.close();
-    }
-    Ok(())
-}
-
-#[tauri::command]
-async fn save_equicord_custom_rpc(mut req: DiscordRpcRequest) -> Result<(), String> {
-    let app_data = std::env::var("APPDATA").map_err(|e| e.to_string())?;
-    let config_path = PathBuf::from(&app_data)
-        .join("Equicord")
-        .join("settings")
-        .join("settings.json");
-
-    let mut json: serde_json::Value = if config_path.exists() {
-        let content = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
-    } else {
-        if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        serde_json::json!({})
-    };
-
-    if json["plugins"].is_null() {
-        json["plugins"] = serde_json::json!({});
-    }
-
-    // Format URLs
-    if let Some(ref mut url) = req.button_1_url {
-        if !url.trim().is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
-            *url = format!("https://{}", url);
-        }
-    }
-    if let Some(ref mut url) = req.button_2_url {
-        if !url.trim().is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
-            *url = format!("https://{}", url);
-        }
-    }
-
-    // Build the CustomRPC plugin settings structure
-    let custom_rpc_config = serde_json::json!({
-        "enabled": true,
-        "appID": req.client_id,
-        "appName": req.app_name.unwrap_or_else(|| "htss.club".to_string()),
-        "details": req.details.unwrap_or_default(),
-        "state": req.state.unwrap_or_default(),
-        "imageBig": req.large_image.unwrap_or_default(),
-        "imageBigTooltip": req.large_text.unwrap_or_default(),
-        "imageSmall": req.small_image.unwrap_or_default(),
-        "imageSmallTooltip": req.small_text.unwrap_or_default(),
-        "buttonOneText": req.button_1_label.unwrap_or_default(),
-        "buttonOneURL": req.button_1_url.unwrap_or_default(),
-        "buttonTwoText": req.button_2_label.unwrap_or_default(),
-        "buttonTwoURL": req.button_2_url.unwrap_or_default(),
-        "timestampMode": if req.show_timestamp.unwrap_or(false) { 3 } else { 0 },
-        "type": 0,
-        "partyMaxSize": req.party_max.unwrap_or(1),
-        "partySize": req.party_size.unwrap_or(1),
-        "startTime": if req.show_timestamp.unwrap_or(false) { 17690696267000i64 } else { 0 }
-    });
-
-    json["plugins"]["CustomRPC"] = custom_rpc_config;
-
-    let pretty_content = serde_json::to_string_pretty(&json)
-        .map_err(|e| format!("Lỗi format JSON: {}", e))?;
-    fs::write(&config_path, pretty_content)
-        .map_err(|e| format!("Lỗi khi ghi file config: {}", e))?;
-
-    Ok(())
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct DirectRpcResponse {
-    pub enabled: bool,
-    pub config: Option<DiscordRpcRequest>,
-}
-
-#[tauri::command]
-async fn save_direct_rpc_config(enabled: bool, config: DiscordRpcRequest) -> Result<(), String> {
-    let app_data = std::env::var("APPDATA").map_err(|e| e.to_string())?;
-    let config_dir = PathBuf::from(&app_data).join("hihii");
-    if !config_dir.exists() {
-        fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
-    }
-    let config_path = config_dir.join("direct_rpc.json");
-    
-    let json = serde_json::json!({
-        "enabled": enabled,
-        "config": config
-    });
-    
-    let pretty_content = serde_json::to_string_pretty(&json)
-        .map_err(|e| format!("Lỗi format JSON: {}", e))?;
-    fs::write(&config_path, pretty_content)
-        .map_err(|e| format!("Lỗi khi ghi file config: {}", e))?;
-        
-    Ok(())
-}
-
-#[tauri::command]
-async fn get_direct_rpc_config() -> Result<DirectRpcResponse, String> {
-    let app_data = std::env::var("APPDATA").map_err(|e| e.to_string())?;
-    let config_path = PathBuf::from(&app_data)
-        .join("hihii")
-        .join("direct_rpc.json");
-        
-    if !config_path.exists() {
-        return Ok(DirectRpcResponse { enabled: false, config: None });
-    }
-    
-    let content = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-    let json: serde_json::Value = serde_json::from_str(&content)
-        .unwrap_or(serde_json::json!({}));
-        
-    let enabled = json["enabled"].as_bool().unwrap_or(false);
-    let config_val = json["config"].clone();
-    
-    let config = serde_json::from_value(config_val).ok();
-    
-    Ok(DirectRpcResponse { enabled, config })
-}
-
-#[tauri::command]
-async fn clear_equicord_custom_rpc() -> Result<(), String> {
-    let app_data = std::env::var("APPDATA").map_err(|e| e.to_string())?;
-    let config_path = PathBuf::from(&app_data)
-        .join("Equicord")
-        .join("settings")
-        .join("settings.json");
-
-    if config_path.exists() {
-        let content = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-        let mut json: serde_json::Value = serde_json::from_str(&content)
-            .unwrap_or(serde_json::json!({}));
-
-        if !json["plugins"].is_null() && !json["plugins"]["CustomRPC"].is_null() {
-            json["plugins"]["CustomRPC"]["enabled"] = serde_json::json!(false);
-            
-            let pretty_content = serde_json::to_string_pretty(&json)
-                .map_err(|e| format!("Lỗi format JSON: {}", e))?;
-            fs::write(&config_path, pretty_content)
-                .map_err(|e| format!("Lỗi khi ghi file config: {}", e))?;
-        }
-    }
-
-    Ok(())
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct EquicordRpcResponse {
-    pub enabled: bool,
-    pub config: Option<DiscordRpcRequest>,
-}
-
-#[tauri::command]
-async fn get_equicord_custom_rpc() -> Result<EquicordRpcResponse, String> {
-    let app_data = std::env::var("APPDATA").map_err(|e| e.to_string())?;
-    let config_path = PathBuf::from(&app_data)
-        .join("Equicord")
-        .join("settings")
-        .join("settings.json");
-
-    if !config_path.exists() {
-        return Ok(EquicordRpcResponse { enabled: false, config: None });
-    }
-
-    let content = fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
-    let json: serde_json::Value = serde_json::from_str(&content)
-        .unwrap_or(serde_json::json!({}));
-
-    let custom_rpc = &json["plugins"]["CustomRPC"];
-    if custom_rpc.is_null() || !custom_rpc.is_object() {
-        return Ok(EquicordRpcResponse { enabled: false, config: None });
-    }
-
-    let enabled = custom_rpc["enabled"].as_bool().unwrap_or(false);
-
-    let client_id = custom_rpc["appID"].as_str().unwrap_or("1495523138816053459").to_string();
-    let app_name = custom_rpc["appName"].as_str().map(|s| s.to_string());
-    let details = custom_rpc["details"].as_str().map(|s| s.to_string());
-    let state = custom_rpc["state"].as_str().map(|s| s.to_string());
-    let large_image = custom_rpc["imageBig"].as_str().map(|s| s.to_string());
-    let large_text = custom_rpc["imageBigTooltip"].as_str().map(|s| s.to_string());
-    let small_image = custom_rpc["imageSmall"].as_str().map(|s| s.to_string());
-    let small_text = custom_rpc["imageSmallTooltip"].as_str().map(|s| s.to_string());
-    
-    let button_1_label = custom_rpc["buttonOneText"].as_str().map(|s| s.to_string());
-    let button_1_url = custom_rpc["buttonOneURL"].as_str().map(|s| s.to_string());
-    let button_2_label = custom_rpc["buttonTwoText"].as_str().map(|s| s.to_string());
-    let button_2_url = custom_rpc["buttonTwoURL"].as_str().map(|s| s.to_string());
-    
-    let show_timestamp = custom_rpc["timestampMode"].as_i64().map(|v| v != 0);
-    
-    let party_size = custom_rpc["partySize"].as_i64();
-    let party_max = custom_rpc["partyMaxSize"].as_i64();
-
-    Ok(EquicordRpcResponse {
-        enabled,
-        config: Some(DiscordRpcRequest {
-            client_id,
-            app_name,
-            details,
-            state,
-            large_image,
-            large_text,
-            small_image,
-            small_text,
-            button_1_label,
-            button_1_url,
-            button_2_label,
-            button_2_url,
-            show_timestamp,
-            party_size,
-            party_max,
-        }),
-    })
-}
-
 #[tauri::command]
 async fn fetch_short_reels_index(tab_key: String) -> Result<serde_json::Value, String> {
     let client = get_async_http_client();
@@ -2468,6 +2111,7 @@ pub fn run() {
     })
     .invoke_handler(tauri::generate_handler![
         create_pip_window,
+        open_discord_voice_overlay,
         get_riot_credentials, 
         fetch_valorant_storefront, 
         fetch_valorant_mmr, 
@@ -2481,13 +2125,6 @@ pub fn run() {
         toggle_questify_plugin,
         kill_discord,
         launch_discord,
-        set_discord_rpc,
-        clear_discord_rpc,
-        save_equicord_custom_rpc,
-        clear_equicord_custom_rpc,
-        get_equicord_custom_rpc,
-        save_direct_rpc_config,
-        get_direct_rpc_config,
         add_valorant_account_credentials,
         add_valorant_account_client,
         get_valorant_accounts,

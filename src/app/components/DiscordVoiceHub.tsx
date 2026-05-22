@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { RefreshCw, Send, Volume2, Square, Mic } from "lucide-react";
+import { RefreshCw, Send, Volume2, Square, Mic, Pin } from "lucide-react";
 
 interface HistoryItem {
   id: string;
@@ -79,6 +79,13 @@ export default function DiscordVoiceHub() {
   }, []);
 
   useEffect(() => {
+    localStorage.setItem("discordVoiceSettings", JSON.stringify({
+      selectedDevice,
+      selectedVoice,
+    }));
+  }, [selectedDevice, selectedVoice]);
+
+  useEffect(() => {
     if (historyRef.current) {
       historyRef.current.scrollTo({
         top: historyRef.current.scrollHeight,
@@ -153,6 +160,15 @@ export default function DiscordVoiceHub() {
     setIsSpeaking(false);
   };
 
+  const openOverlay = async () => {
+    localStorage.setItem("discordVoiceSettings", JSON.stringify({
+      selectedDevice,
+      selectedVoice,
+    }));
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_discord_voice_overlay");
+  };
+
   return (
     <div className="flex h-full max-h-full min-h-0 w-full flex-col overflow-hidden">
       {/* Header */}
@@ -179,6 +195,14 @@ export default function DiscordVoiceHub() {
               <option key={d.deviceId} value={d.deviceId}>{d.label || `Device ${d.deviceId.slice(0, 8)}`}</option>
             ))}
           </select>
+          <button
+            onClick={openOverlay}
+            className="flex items-center gap-1.5 rounded-lg border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-1.5 text-xs font-semibold text-cyan-300 transition-colors hover:bg-cyan-400/20 hover:text-cyan-200"
+            title="Pin cửa sổ TTS nhỏ lên Discord"
+          >
+            <Pin className="h-3.5 w-3.5" />
+            Sử dụng
+          </button>
           <button
             onClick={() => loadAudioDevices(true)}
             className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-neutral-300 transition-colors hover:bg-white/10 hover:text-white"

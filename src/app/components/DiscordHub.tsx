@@ -4,9 +4,8 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Download, CheckCircle, XCircle, AlertCircle, Loader2,
-  Power, RefreshCw, Terminal, Shield, Zap, Info, Activity, Sliders
+  Power, RefreshCw, Terminal, Shield, Zap, Info
 } from "lucide-react";
-import DiscordRpcHub from "./DiscordRpcHub";
 
 type InstallStatus = "idle" | "loading" | "success" | "error";
 type QuestifyStatus = "unknown" | "loading" | "enabled" | "disabled" | "error";
@@ -18,7 +17,6 @@ interface LogLine {
 }
 
 export default function DiscordHub() {
-  const [activeSubTab, setActiveSubTab] = useState<"tools" | "rpc">("tools");
   const [installStatus, setInstallStatus] = useState<InstallStatus>("idle");
   const [questifyStatus, setQuestifyStatus] = useState<QuestifyStatus>("loading");
   const [discordStatus, setDiscordStatus] = useState<DiscordStatus>("loading");
@@ -85,8 +83,12 @@ export default function DiscordHub() {
   };
 
   useEffect(() => {
-    checkDiscordStatus(false);
-    checkEquicordInstalled(false);
+    const setupDiscordTools = async () => {
+      await checkDiscordStatus(false);
+      await checkEquicordInstalled(false);
+    };
+
+    setupDiscordTools();
 
     const interval = setInterval(() => {
       checkDiscordStatusSilent();
@@ -197,34 +199,7 @@ export default function DiscordHub() {
         </div>
       </div>
 
-      {/* Sub navigation tabs */}
-      <div className="flex border-b border-white/5 pb-px select-none">
-        <button
-          onClick={() => setActiveSubTab("tools")}
-          className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs tracking-wider uppercase transition-all duration-200 cursor-pointer ${
-            activeSubTab === "tools"
-              ? "border-[#5865F2] text-white"
-              : "border-transparent text-neutral-500 hover:text-neutral-300"
-          }`}
-        >
-          <Sliders className="w-3.5 h-3.5" />
-          Công cụ & Tiện ích
-        </button>
-        <button
-          onClick={() => setActiveSubTab("rpc")}
-          className={`flex items-center gap-2 px-5 py-3 border-b-2 font-bold text-xs tracking-wider uppercase transition-all duration-200 cursor-pointer ${
-            activeSubTab === "rpc"
-              ? "border-[#5865F2] text-white"
-              : "border-transparent text-neutral-500 hover:text-neutral-300"
-          }`}
-        >
-          <Activity className="w-3.5 h-3.5" />
-          Discord Rich Presence (RPC)
-        </button>
-      </div>
-
-      {activeSubTab === "tools" ? (
-        <>
+      <>
           {/* Discord Status Card */}
           <div className="rounded-2xl border border-white/5 bg-white/[0.03] p-5 flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
@@ -415,10 +390,7 @@ export default function DiscordHub() {
               </div>
             </div>
           )}
-        </>
-      ) : (
-        <DiscordRpcHub />
-      )}
+      </>
     </div>
   );
 }
